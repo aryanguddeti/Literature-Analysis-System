@@ -1,0 +1,30 @@
+# Literature Analysis System — requirements.txt
+# Run: pip install -r requirements.txt
+
+# Core
+streamlit>=1.35.0
+python-dotenv>=1.0.0
+
+# LLM & embeddings (shared with Aryan & Anmol)
+langchain-google-genai>=1.0.7
+langchain-core>=0.2.0
+google-generativeai>=0.7.0
+
+# Vector store (Aryan's dedup cache)
+chromadb>=0.5.0
+
+# ArXiv (Aryan's tool)
+arxiv>=2.1.0
+
+# HTTP (Aryan's Semantic Scholar wrapper)
+requests>=2.31.0
+
+# Data & graph (Devang — knowledge_map.py)
+networkx>=3.3
+numpy>=1.26.0
+
+# Visualization (Devang — timeline.py, knowledge_map.py)
+plotly>=5.22.0
+
+# Pydantic (Aryan's QueryOutput model)
+pydantic>=2.7.0

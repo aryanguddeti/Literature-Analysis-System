@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Knowledge Graph — Literature Analysis System</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f1117;
+      color: #e0e0e0;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    #controls {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .control-panel {
+      background: rgba(30, 33, 48, 0.95);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      padding: 14px 16px;
+      min-width: 200px;
+    }
+
+    .control-panel h3 {
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #888;
+      margin-bottom: 10px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.82rem;
+      padding: 3px 0;
+      cursor: pointer;
+      opacity: 1;
+      transition: opacity 0.2s;
+    }
+
+    .legend-item.dimmed { opacity: 0.35; }
+
+    .legend-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    #stats {
+      font-size: 0.82rem;
+      line-height: 1.8;
+      color: #aaa;
+    }
+
+    #stats span { color: #4C9BE8; font-weight: 600; }
+
+    #tooltip {
+      position: fixed;
+      background: rgba(20, 22, 35, 0.97);
+      border: 1px solid rgba(76, 155, 232, 0.4);
+      border-radius: 10px;
+      padding: 12px 15px;
+      max-width: 300px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.15s;
+      z-index: 100;
+      font-size: 0.82rem;
+      line-height: 1.5;
+      color: #ddd;
+    }
+
+    #tooltip .tip-title {
+      font-weight: 600;
+      font-size: 0.88rem;
+      color: #fff;
+      margin-bottom: 5px;
+      line-height: 1.3;
+    }
+
+    #tooltip .tip-badge {
+      display: inline-block;
+      background: rgba(76,155,232,0.2);
+      color: #4C9BE8;
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 0.72rem;
+      margin-bottom: 6px;
+    }
+
+    #svg-container {
+      width: 100vw;
+      height: 100vh;
+    }
+
+    svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    .link {
+      stroke: rgba(255,255,255,0.12);
+      stroke-width: 1px;
+      marker-end: url(#arrowhead);
+    }
+
+    .node circle {
+      cursor: pointer;
+      stroke: rgba(255,255,255,0.3);
+      stroke-width: 1.5px;
+      transition: stroke-width 0.2s;
+    }
+
+    .node circle:hover { stroke-width: 3px; stroke: white; }
+
+    .node text {
+      font-size: 9px;
+      fill: rgba(255,255,255,0.7);
+      pointer-events: none;
+      text-anchor: middle;
+    }
+
+    #search-box {
+      background: rgba(30, 33, 48, 0.95);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      padding: 10px 14px;
+    }
+
+    #search-box input {
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px;
+      color: #e0e0e0;
+      padding: 6px 10px;
+      font-size: 0.82rem;
+      width: 100%;
+      outline: none;
+    }
+
+    #search-box input::placeholder { color: #555; }
+
+    #search-box input:focus { border-color: #4C9BE8; }
+  </style>
+</head>
+<body>
+
+<div id="controls">
+  <div class="control-panel">
+    <h3>Citation Network</h3>
+    <div id="stats">
+      Nodes: <span id="stat-nodes">—</span><br>
+      Edges: <span id="stat-edges">—</span><br>
+      Clusters: <span id="stat-clusters">—</span>
+    </div>
+  </div>
+
+  <div id="search-box">
+    <input type="text" id="search-input" placeholder="Search paper title…" />
+  </div>
+
+  <div class="control-panel">
+    <h3>Clusters</h3>
+    <div id="legend"></div>
+  </div>
+</div>
+
+<div id="tooltip"></div>
+<div id="svg-container"><svg id="graph"></svg></div>
+
+<script>
+// ── Load data ─────────────────────────────────────────────────────────────────
+// In production, graph_data is injected by Streamlit or loaded from a JSON file.
+// For standalone use, fetch from a sidecar JSON file.
+
+const CLUSTER_COLORS = {
+  "transformer-based":      "#4C9BE8",
+  "reinforcement-learning": "#E8674C",
+  "GNN-based":              "#4CE8A0",
+  "CNN-based":              "#E8C44C",
+  "RNN-based":              "#A04CE8",
+  "optimization":           "#E84CA0",
+  "probabilistic":          "#4CE8D4",
+  "hybrid":                 "#E8834C",
+  "survey":                 "#8B9E8E",
+  "other":                  "#888888",
+};
+
+function getColor(cluster) {
+  return CLUSTER_COLORS[cluster] || "#888888";
+}
+
+function nodeRadius(d) {
+  return Math.max(8, Math.min(30, 8 + Math.log1p(d.citations || 0) * 3));
+}
+
+async function loadData() {
+  // Try to read injected data from window object (Streamlit mode)
+  if (window.GRAPH_DATA) return window.GRAPH_DATA;
+  // Fallback: fetch from sidecar file
+  try {
+    const resp = await fetch("graph_data.json");
+    return await resp.json();
+  } catch {
+    return { nodes: [], links: [] };
+  }
+}
+
+async function init() {
+  const data = await loadData();
+
+  const svg = d3.select("#graph");
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+
+  // ── Arrow marker ────────────────────────────────────────────────────────────
+  svg.append("defs").append("marker")
+    .attr("id", "arrowhead")
+    .attr("viewBox", "0 -5 10 10")
+    .attr("refX", 20)
+    .attr("refY", 0)
+    .attr("markerWidth", 6)
+    .attr("markerHeight", 6)
+    .attr("orient", "auto")
+    .append("path")
+    .attr("d", "M0,-5L10,0L0,5")
+    .attr("fill", "rgba(255,255,255,0.2)");
+
+  const g = svg.append("g");
+
+  // Zoom & pan
+  svg.call(d3.zoom()
+    .scaleExtent([0.2, 5])
+    .on("zoom", e => g.attr("transform", e.transform))
+  );
+
+  // ── Stats ──────────────────────────────────────────────────────────────────
+  const clusters = [...new Set(data.nodes.map(n => n.cluster))];
+  document.getElementById("stat-nodes").textContent = data.nodes.length;
+  document.getElementById("stat-edges").textContent = data.links.length;
+  document.getElementById("stat-clusters").textContent = clusters.length;
+
+  // ── Legend ─────────────────────────────────────────────────────────────────
+  const legendEl = document.getElementById("legend");
+  const hiddenClusters = new Set();
+
+  clusters.forEach(cluster => {
+    const item = document.createElement("div");
+    item.className = "legend-item";
+    item.innerHTML = `
+      <div class="legend-dot" style="background:${getColor(cluster)}"></div>
+      <span>${cluster}</span>
+    `;
+    item.addEventListener("click", () => {
+      if (hiddenClusters.has(cluster)) {
+        hiddenClusters.delete(cluster);
+        item.classList.remove("dimmed");
+      } else {
+        hiddenClusters.add(cluster);
+        item.classList.add("dimmed");
+      }
+      updateVisibility();
+    });
+    legendEl.appendChild(item);
+  });
+
+  // ── Simulation ─────────────────────────────────────────────────────────────
+  const simulation = d3.forceSimulation(data.nodes)
+    .force("link", d3.forceLink(data.links).id(d => d.id).distance(120).strength(0.4))
+    .force("charge", d3.forceManyBody().strength(-300))
+    .force("center", d3.forceCenter(width / 2, height / 2))
+    .force("collision", d3.forceCollide().radius(d => nodeRadius(d) + 8));
+
+  // ── Links ──────────────────────────────────────────────────────────────────
+  const link = g.append("g")
+    .selectAll("line")
+    .data(data.links)
+    .join("line")
+    .attr("class", "link");
+
+  // ── Nodes ──────────────────────────────────────────────────────────────────
+  const node = g.append("g")
+    .selectAll("g")
+    .data(data.nodes)
+    .join("g")
+    .attr("class", "node")
+    .call(d3.drag()
+      .on("start", (event, d) => {
+        if (!event.active) simulation.alphaTarget(0.3).restart();
+        d.fx = d.x; d.fy = d.y;
+      })
+      .on("drag", (event, d) => { d.fx = event.x; d.fy = event.y; })
+      .on("end", (event, d) => {
+        if (!event.active) simulation.alphaTarget(0);
+        d.fx = null; d.fy = null;
+      })
+    );
+
+  node.append("circle")
+    .attr("r", d => nodeRadius(d))
+    .attr("fill", d => getColor(d.cluster))
+    .attr("fill-opacity", 0.85);
+
+  node.append("text")
+    .attr("dy", d => nodeRadius(d) + 12)
+    .text(d => d.title ? d.title.substring(0, 22) + (d.title.length > 22 ? "…" : "") : "");
+
+  // ── Tooltip ────────────────────────────────────────────────────────────────
+  const tooltip = document.getElementById("tooltip");
+
+  node.on("mousemove", (event, d) => {
+    const authors = (d.authors || []).slice(0, 2).join(", ");
+    tooltip.innerHTML = `
+      <div class="tip-title">${d.title || "Untitled"}</div>
+      <div class="tip-badge">${d.cluster || "other"}</div><br>
+      <b>Year:</b> ${d.year || "N/A"}<br>
+      <b>Authors:</b> ${authors || "N/A"}<br>
+      <b>Citations:</b> ${(d.citations || 0).toLocaleString()}<br>
+      <b>Relevance:</b> ${(d.relevance || 0).toFixed(3)}<br><br>
+      ${d.key_finding ? d.key_finding.substring(0, 150) + "…" : ""}
+      ${d.pdf_url ? `<br><a href="${d.pdf_url}" target="_blank" style="color:#4C9BE8;">📄 PDF</a>` : ""}
+    `;
+    tooltip.style.opacity = "1";
+    tooltip.style.left = (event.clientX + 16) + "px";
+    tooltip.style.top = (event.clientY - 10) + "px";
+  });
+
+  node.on("mouseleave", () => { tooltip.style.opacity = "0"; });
+
+  // ── Simulation tick ────────────────────────────────────────────────────────
+  simulation.on("tick", () => {
+    link
+      .attr("x1", d => d.source.x)
+      .attr("y1", d => d.source.y)
+      .attr("x2", d => d.target.x)
+      .attr("y2", d => d.target.y);
+
+    node.attr("transform", d => `translate(${d.x},${d.y})`);
+  });
+
+  // ── Cluster visibility toggle ──────────────────────────────────────────────
+  function updateVisibility() {
+    node.attr("display", d => hiddenClusters.has(d.cluster) ? "none" : null);
+    link.attr("display", d => {
+      const src = typeof d.source === "object" ? d.source : data.nodes.find(n => n.id === d.source);
+      const tgt = typeof d.target === "object" ? d.target : data.nodes.find(n => n.id === d.target);
+      if (!src || !tgt) return null;
+      return (hiddenClusters.has(src.cluster) || hiddenClusters.has(tgt.cluster)) ? "none" : null;
+    });
+  }
+
+  // ── Search ─────────────────────────────────────────────────────────────────
+  document.getElementById("search-input").addEventListener("input", function() {
+    const q = this.value.toLowerCase();
+    node.selectAll("circle").attr("stroke", d => {
+      if (!q) return "rgba(255,255,255,0.3)";
+      return d.title && d.title.toLowerCase().includes(q) ? "white" : "rgba(255,255,255,0.1)";
+    }).attr("fill-opacity", d => {
+      if (!q) return 0.85;
+      return d.title && d.title.toLowerCase().includes(q) ? 1.0 : 0.2;
+    });
+  });
+}
+
+init();
+</script>
+</body>
+</html>
