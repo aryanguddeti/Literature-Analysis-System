@@ -1,69 +1,4 @@
-# from dotenv import load_dotenv
-# from pydantic import BaseModel
-# from typing import List
-#
-# from langchain_core.prompts import (ChatPromptTemplate)
-# from langchain_google_genai import ChatGoogleGenerativeAI
-#
-# load_dotenv("../.env")
-#
-# class QueryOutput(BaseModel):
-#     queries: List[str]
-#
-# llm = model = ChatGoogleGenerativeAI(
-#     model="gemini-3.1-flash-lite-preview",
-#     temperature=0.6,
-#     max_tokens=None,
-#     timeout=None,
-#     max_retries=2,
-# ).with_structured_output(QueryOutput)
-#
-# def generate_query_variants(topic: str) -> list[str]:
-#     prompt = ChatPromptTemplate.from_template("""
-#     Given the research topic: "{topic}"
-#     Generate 3-4 distinct search query variants that would retrieve
-#     complementary sets of papers. Return as a JSON list of strings.
-#     Example for "attention mechanisms in NLP":
-#     ["self-attention transformer NLP", "attention neural machine translation",
-#      "scaled dot product attention BERT", "multi-head attention sequence models"]
-#     """)
-#
-#     formated_message = prompt.format(topic=topic)
-#
-#     # Call Gemini 1.5 Pro
-#     response = llm.invoke(formated_message)
-#     return response.queries
-
-
-
-"""
-agents/retriever.py
-───────────────────
-Retriever Agent — Data Ingestion & Discovery.
-Owned by Aryan.
-
-Pipeline (run in order):
-  1. generate_query_variants   — Claude expands topic into 3–4 diverse queries
-  2. fetch_from_semantic_scholar — multi-query search across all variants
-  3. snowball_citations          — 1-level citation expansion on top-N by citations
-  4. bulk_enrich_with_arxiv      — attach PDF URLs, fill missing abstracts
-  5. deduplicate                 — ChromaDB + embedding cosine similarity
-  6. score_relevance             — rank every paper against the original topic
-  7. enforce_hard_cap            — trim to HARD_CAP (30), keep highest-scored
-
-On completion, sets:
-  context.query_variants        (list[str])
-  context.raw_papers            (list[dict])   — pre-dedup candidates
-  context.deduplicated_papers   (list[dict])   — post-dedup, sorted by score
-  context.paper_embeddings      (dict[str, list[float]])
-  context.pipeline_status       → 'awaiting_hitl'
-
-On unrecoverable error, sets context.pipeline_status → 'error'.
-"""
-
-import os
 import datetime
-import json
 import time
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -131,19 +66,20 @@ def generate_query_variants(topic: str, n: int = QUERY_VARIANTS_COUNT) -> list[s
                 Generate exactly {n} diverse academic search queries for Semantic Scholar and ArXiv.
 
                 Return ONLY a valid JSON array of {n} strings. No explanation, no markdown fences.
+                
+                STRICT RULES:
+                - Each query must be 2–6 words only
+                - DO NOT use quotes ("")
+                - DO NOT use AND, OR, NOT, parentheses, or any boolean operators
+                - DO NOT use punctuation except spaces
+                - Keep queries simple keyword-style (like a Google search)
+                - Each query should represent a different angle of the topic
+
+                Return ONLY a JSON array of strings.
                 """
 
     try:
         response = _LLM.invoke(prompt)
-        # raw = response.content.strip()
-        #
-        # variants = json.loads(raw)
-        #
-        # if isinstance(variants, list) and variants:
-        #     clean = [str(v).strip() for v in variants if str(v).strip()][:n]
-        #     if topic not in clean:
-        #         clean = [topic] + clean[: n - 1]
-        #     return clean
 
     except Exception as e:
         print(f"[Retriever] Query generation failed: {e}")
