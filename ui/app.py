@@ -331,18 +331,11 @@ def screen_retrieving():
         "Deduplicating and scoring relevance…",
     ]
 
-    i = 0
-    while not st.session_state.retriever_done:
-        progress = min(0.9, (i % 50) / 50)
-        progress_ph.progress(progress)
-        status_ph.markdown(f"**{status_messages[i % len(status_messages)]}**")
-        if ctx.query_variants:
-            detail_ph.caption(f"Queries: {' · '.join(ctx.query_variants[:3])}")
-        time.sleep(2)
-        i += 1
-
-    # Done
-    progress_ph.progress(1.0)
+    # Poll pipeline_status — works across threads
+    if ctx.pipeline_status in ("awaiting_hitl", "analysing", "done") or len(ctx.deduplicated_papers) > 0:
+        st.session_state.stage = "hitl"
+        st.rerun()
+        return
 
     if ctx.pipeline_status == "error":
         errors = [e for e in ctx.errors if not e.get("recoverable")]
@@ -350,7 +343,17 @@ def screen_retrieving():
         _error_banner(msg)
         return
 
-    st.session_state.stage = "hitl"
+    i = st.session_state.get("retriever_poll_i", 0)
+    progress = min(0.9, (i % 50) / 50)
+    progress_ph.progress(progress)
+    status_ph.markdown(f"**{status_messages[i % len(status_messages)]}**")
+    if ctx.query_variants:
+        detail_ph.caption("Queries: " + " · ".join(ctx.query_variants[:3]))
+    st.session_state.retriever_poll_i = i + 1
+
+    if st.button("🔄 Retrieval done? Click to continue"):
+        st.rerun()
+    time.sleep(3)
     st.rerun()
 
 
@@ -464,16 +467,22 @@ def screen_analysing():
         (0.95, "Generating your output…"),
     ]
 
-    i = 0
-    while not st.session_state.analyst_done:
-        pass_idx = min(i // 15, len(passes) - 1)
-        progress, msg = passes[pass_idx]
-        progress_ph.progress(progress)
-        status_ph.markdown(f"**{msg}**")
-        time.sleep(2)
-        i += 1
-
-    progress_ph.progress(1.0)
+    # Check if analyst is done by inspecting context directly
+    if ctx.pipeline_status in ("showcasing", "done") or len(ctx.extracted_knowledge) > 0:
+        progress_ph.progress(1.0)
+        if ctx.pipeline_status == "error":
+            errors = [e for e in ctx.errors if not e.get("recoverable")]
+            msg = errors[-1]["message"] if errors else "Analysis failed."
+            _error_banner(msg)
+            return
+        if not st.session_state.get("showcase_started"):
+            st.session_state.showcase_started = True
+            st.session_state.showcase_done = False
+            t = threading.Thread(target=_run_showcase, args=(ctx,), daemon=True)
+            t.start()
+        st.session_state.stage = "showcasing"
+        st.rerun()
+        return
 
     if ctx.pipeline_status == "error":
         errors = [e for e in ctx.errors if not e.get("recoverable")]
@@ -481,11 +490,16 @@ def screen_analysing():
         _error_banner(msg)
         return
 
-    # Kick off Showcase
-    st.session_state.stage = "showcasing"
-    st.session_state.showcase_done = False
-    t = threading.Thread(target=_run_showcase, args=(ctx,), daemon=True)
-    t.start()
+    i = st.session_state.get("analyst_poll_i", 0)
+    pass_idx = min(i // 15, len(passes) - 1)
+    progress, msg = passes[pass_idx]
+    progress_ph.progress(progress)
+    status_ph.markdown(f"**{msg}**")
+    st.session_state.analyst_poll_i = i + 1
+
+    if st.button("🔄 Analysis done? Click to continue"):
+        st.rerun()
+    time.sleep(3)
     st.rerun()
 
 
@@ -497,14 +511,24 @@ def screen_showcasing():
     _stage_badge("Step 4 of 4 — Showcase")
 
     progress_ph = st.empty()
-    i = 0
-    while not st.session_state.showcase_done:
-        progress_ph.progress(min(0.95, 0.3 + (i % 20) * 0.03))
-        time.sleep(1.5)
-        i += 1
 
-    progress_ph.progress(1.0)
-    st.session_state.stage = "output"
+    if ctx.final_output is not None or st.session_state.get("showcase_done"):
+        progress_ph.progress(1.0)
+        st.session_state.stage = "output"
+        st.rerun()
+        return
+
+    if ctx.pipeline_status == "error":
+        st.error("Showcase failed.")
+        return
+
+    i = st.session_state.get("showcase_poll_i", 0)
+    progress_ph.progress(min(0.95, 0.3 + (i % 20) * 0.03))
+    st.session_state.showcase_poll_i = i + 1
+
+    if st.button("🔄 Output ready? Click to continue"):
+        st.rerun()
+    time.sleep(2)
     st.rerun()
 
 
