@@ -61,10 +61,10 @@ _LLM = ChatGoogleGenerativeAI(
 # ── Tuning constants ──────────────────────────────────────────────────────────
 
 EXTRACTION_BATCH_SIZE = 5     # Papers per Gemini call (stay within rate limits)
-INTER_BATCH_DELAY     = 3.0   # Seconds between extraction batches
+INTER_BATCH_DELAY     = 1.0   # Seconds between extraction batches
 MIN_CLUSTER_SIZE      = 2     # Clusters smaller than this are merged into "Other"
-CONTRADICTION_DELAY   = 2.0   # Seconds between contradiction detection calls
-MIN_CONFIDENCE        = 0.3   # Papers below this score get a warning flag
+CONTRADICTION_DELAY   = 0.5   # Seconds between contradiction detection calls
+MIN_CONFIDENCE        = 0.3
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
