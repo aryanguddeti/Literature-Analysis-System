@@ -1,28 +1,3 @@
-# import requests
-#
-# BASE_URL = "https://api.semanticscholar.org/graph/v1"
-#
-# def search_papers(query: str, limit: int = 5) -> list[dict]:
-#     params = {
-#         "query": query,
-#         "limit": limit,
-#         "fields": "paperId,title,abstract,year,authors,citationCount,references,externalIds"
-#     }
-#     r = requests.get(f"{BASE_URL}/paper/search", params=params)
-#     return r.json().get("data", [])
-#
-# def get_paper_references(paper_id: str) -> list[dict]:
-#     """Used for citation snowballing — fetch 1 level of references."""
-#     r = requests.get(
-#         f"{BASE_URL}/paper/{paper_id}/references",
-#         params={"fields": "paperId,title,abstract,year,citationCount"}
-#     )
-#     return r.json().get("data", [])
-
-
-
-
-
 """
 tools/semantic_scholar.py
 ─────────────────────────
