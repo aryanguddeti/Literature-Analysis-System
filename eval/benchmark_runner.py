@@ -131,7 +131,7 @@ def run_single_topic(
         "topic_key": topic_key,
         "display_name": benchmark["display_name"],
         "output_format": output_format,
-        "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+        "timestamp": datetime.datetime.utcnow().isoformat(),
         "timing": {},
         "pipeline_status": None,
         "paper_counts": {},

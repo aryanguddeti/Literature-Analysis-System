@@ -47,7 +47,7 @@ def _log_error(
     entry = {
         "stage": stage,
         "message": message,
-        "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+        "timestamp": datetime.datetime.utcnow().isoformat(),
         "recoverable": recoverable,
     }
     context.errors.append(entry)

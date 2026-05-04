@@ -52,7 +52,7 @@ def confirm_papers(
         context.errors.append({
             "stage": "hitl",
             "message": "User confirmed zero papers — cannot proceed with analysis.",
-            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+            "timestamp": datetime.datetime.utcnow().isoformat(),
             "recoverable": False,
         })
         context.pipeline_status = "error"
