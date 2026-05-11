@@ -19,7 +19,7 @@ load_dotenv()
 HARD_CAP = 20               # Absolute maximum papers passed to Analyst
 SNOWBALL_TOP_N = 3          # How many highly-cited papers to snowball
 SNOWBALL_REF_LIMIT = 15     # Max references fetched per snowball paper
-SS_PAPERS_PER_QUERY = 3    # Semantic Scholar results per query variant
+SS_PAPERS_PER_QUERY = 5    # Semantic Scholar results per query variant
 QUERY_VARIANTS_COUNT = 4    # Number of query variants to generate
 INTER_QUERY_DELAY = 6     # Seconds between Semantic Scholar calls
 
@@ -27,7 +27,7 @@ class QueryOutput(BaseModel):
     queries: List[str]
 
 _LLM = model = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash-lite",
+    model="gemini-2.5-flash",
     temperature=0.6,
     max_tokens=None,
     timeout=None,
