@@ -14,10 +14,24 @@ Screens / flow:
 Session state keys:
   st.session_state.context         — SharedContext object
   st.session_state.stage           — UI stage name (string)
-  st.session_state.retriever_done  — bool flag
-  st.session_state.analyst_done    — bool flag
-  st.session_state.showcase_done   — bool flag
   st.session_state.error_message   — string | None
+
+──────────────────────────────────────────────────────────────────────────────
+BUG FIX NOTE (threading)
+──────────────────────────────────────────────────────────────────────────────
+Streamlit's session_state is NOT thread-safe. Writing to it from a background
+thread (e.g. st.session_state.analyst_done = True) silently fails or produces
+undefined behaviour — the main script thread never sees the update, so polling
+loops that check those flags spin forever.
+
+The correct pattern: background threads only mutate the `ctx` (SharedContext)
+object, because `ctx` is a plain Python object stored in session_state by
+reference. Mutations to its attributes from any thread are immediately visible
+to all threads sharing that reference.
+
+All polling logic in screen functions now reads ctx.pipeline_status exclusively,
+matching the pattern that already worked correctly in screen_retrieving().
+──────────────────────────────────────────────────────────────────────────────
 """
 
 import os
@@ -164,9 +178,6 @@ def _init_state():
     defaults = {
         "context": None,
         "stage": "input",
-        "retriever_done": False,
-        "analyst_done": False,
-        "showcase_done": False,
         "error_message": None,
         "selected_paper_ids": [],
     }
@@ -179,6 +190,11 @@ _init_state()
 
 
 # ── Background thread runners ─────────────────────────────────────────────────
+#
+# RULE: these functions ONLY mutate `context` attributes.
+#       They NEVER touch st.session_state — that's not thread-safe.
+#       The screen polling functions read ctx.pipeline_status to detect
+#       completion, because ctx is a shared Python object visible to all threads.
 
 def _run_retriever(context: SharedContext):
     try:
@@ -190,7 +206,8 @@ def _run_retriever(context: SharedContext):
             "message": str(exc),
             "recoverable": False,
         })
-    st.session_state.retriever_done = True
+    # retriever_agent.run() already sets pipeline_status = "awaiting_hitl" on
+    # success. We don't need to set anything extra here.
 
 
 def _run_analyst(context: SharedContext):
@@ -203,7 +220,11 @@ def _run_analyst(context: SharedContext):
             "message": str(exc),
             "recoverable": False,
         })
-    st.session_state.analyst_done = True
+        return
+    # ── FIX: set completion status on ctx, not on st.session_state ──────────
+    # screen_analysing polls ctx.pipeline_status to detect this transition.
+    if context.pipeline_status != "error":
+        context.pipeline_status = "analyst_done"
 
 
 def _run_showcase(context: SharedContext):
@@ -216,7 +237,11 @@ def _run_showcase(context: SharedContext):
             "message": str(exc),
             "recoverable": False,
         })
-    st.session_state.showcase_done = True
+        return
+    # ── FIX: set completion status on ctx, not on st.session_state ──────────
+    # screen_showcasing polls ctx.pipeline_status to detect this transition.
+    if context.pipeline_status != "error":
+        context.pipeline_status = "showcase_done"
 
 
 # ── Helper: reset ─────────────────────────────────────────────────────────────
@@ -285,8 +310,6 @@ def screen_input():
                 ctx = SharedContext(topic=topic.strip(), output_format=selected_format)
                 st.session_state.context = ctx
                 st.session_state.stage = "retrieving"
-                st.session_state.retriever_done = False
-                # Start retriever in background
                 t = threading.Thread(target=_run_retriever, args=(ctx,), daemon=True)
                 t.start()
                 st.rerun()
@@ -312,13 +335,19 @@ def screen_retrieving():
     _header(f'Searching for papers on: *"{ctx.topic}"*')
     _stage_badge("Step 1 of 4 — Retrieving Papers")
 
+    # ── Check for completion or error first, before rendering any progress UI
     if ctx.pipeline_status == "error":
         errors = [e for e in ctx.errors if not e.get("recoverable")]
         msg = errors[-1]["message"] if errors else "Unknown retrieval error."
         _error_banner(msg)
         return
 
-    # Progress display
+    if ctx.pipeline_status in ("awaiting_hitl", "analysing", "done") or len(ctx.deduplicated_papers) > 0:
+        st.session_state.stage = "hitl"
+        st.rerun()
+        return
+
+    # ── Still running — show animated progress ────────────────────────────────
     progress_ph = st.empty()
     status_ph = st.empty()
     detail_ph = st.empty()
@@ -331,28 +360,13 @@ def screen_retrieving():
         "Deduplicating and scoring relevance…",
     ]
 
-    # Poll pipeline_status — works across threads
-    if ctx.pipeline_status in ("awaiting_hitl", "analysing", "done") or len(ctx.deduplicated_papers) > 0:
-        st.session_state.stage = "hitl"
-        st.rerun()
-        return
-
-    if ctx.pipeline_status == "error":
-        errors = [e for e in ctx.errors if not e.get("recoverable")]
-        msg = errors[-1]["message"] if errors else "Retrieval failed."
-        _error_banner(msg)
-        return
-
     i = st.session_state.get("retriever_poll_i", 0)
-    progress = min(0.9, (i % 50) / 50)
-    progress_ph.progress(progress)
+    progress_ph.progress(min(0.9, (i % 50) / 50))
     status_ph.markdown(f"**{status_messages[i % len(status_messages)]}**")
     if ctx.query_variants:
         detail_ph.caption("Queries: " + " · ".join(ctx.query_variants[:3]))
     st.session_state.retriever_poll_i = i + 1
 
-    if st.button("🔄 Retrieval done? Click to continue"):
-        st.rerun()
     time.sleep(3)
     st.rerun()
 
@@ -436,8 +450,8 @@ def screen_hitl():
         btn_label = f"✅ Confirm {n_selected} papers & Start Analysis" if n_selected > 0 else "Select at least 1 paper"
         if st.button(btn_label, type="primary", disabled=(n_selected == 0), use_container_width=True):
             confirm_papers(ctx, new_selected)
+            ctx.pipeline_status = "analysing"   # set on ctx so the thread sees it
             st.session_state.stage = "analysing"
-            st.session_state.analyst_done = False
             t = threading.Thread(target=_run_analyst, args=(ctx,), daemon=True)
             t.start()
             st.rerun()
@@ -447,8 +461,12 @@ def screen_hitl():
 
 def screen_analysing():
     ctx: SharedContext = st.session_state.context
-    _header(f'Analyzing {len(ctx.user_confirmed_papers)} papers on: *"{ctx.topic}"*')
+    _header(f'Analyzing {len(ctx.user_confirmed_papers)} papers on: "{ctx.topic}"')
     _stage_badge("Step 3 of 4 — Analyzing")
+
+    # ── FIX: poll ctx.pipeline_status, NOT st.session_state.analyst_done ─────
+    # Background threads can't reliably write to st.session_state.
+    # ctx is a shared Python object — its attribute mutations are always visible.
 
     if ctx.pipeline_status == "error":
         errors = [e for e in ctx.errors if not e.get("recoverable")]
@@ -456,50 +474,30 @@ def screen_analysing():
         _error_banner(msg)
         return
 
-    progress_ph = st.empty()
-    status_ph = st.empty()
+    if ctx.pipeline_status == "analyst_done":
+        # Analyst finished — kick off Showcase in a new background thread
+        st.session_state.stage = "showcasing"
+        t = threading.Thread(target=_run_showcase, args=(ctx,), daemon=True)
+        t.start()
+        st.rerun()
+        return
 
+    # ── Still running — show animated progress ────────────────────────────────
     passes = [
-        (0.1, "Pass 1/4: Extracting methodology & findings from each paper…"),
-        (0.4, "Pass 2/4: Clustering papers by methodology…"),
+        (0.10, "Pass 1/4: Extracting methodology & findings from each paper…"),
+        (0.40, "Pass 2/4: Clustering papers by methodology…"),
         (0.65, "Pass 3/4: Detecting contradictions within clusters…"),
         (0.85, "Pass 4/4: Building paradigm shift timeline…"),
         (0.95, "Generating your output…"),
     ]
 
-    # Check if analyst is done by inspecting context directly
-    if ctx.pipeline_status in ("showcasing", "done") or len(ctx.extracted_knowledge) > 0:
-        progress_ph.progress(1.0)
-        if ctx.pipeline_status == "error":
-            errors = [e for e in ctx.errors if not e.get("recoverable")]
-            msg = errors[-1]["message"] if errors else "Analysis failed."
-            _error_banner(msg)
-            return
-        if not st.session_state.get("showcase_started"):
-            st.session_state.showcase_started = True
-            st.session_state.showcase_done = False
-            t = threading.Thread(target=_run_showcase, args=(ctx,), daemon=True)
-            t.start()
-        st.session_state.stage = "showcasing"
-        st.rerun()
-        return
-
-    if ctx.pipeline_status == "error":
-        errors = [e for e in ctx.errors if not e.get("recoverable")]
-        msg = errors[-1]["message"] if errors else "Analysis failed."
-        _error_banner(msg)
-        return
-
     i = st.session_state.get("analyst_poll_i", 0)
-    pass_idx = min(i // 15, len(passes) - 1)
-    progress, msg = passes[pass_idx]
-    progress_ph.progress(progress)
-    status_ph.markdown(f"**{msg}**")
+    progress, msg = passes[i % len(passes)]
+    st.progress(progress)
+    st.markdown(f"*{msg}*")
     st.session_state.analyst_poll_i = i + 1
 
-    if st.button("🔄 Analysis done? Click to continue"):
-        st.rerun()
-    time.sleep(3)
+    time.sleep(2)
     st.rerun()
 
 
@@ -512,22 +510,23 @@ def screen_showcasing():
 
     progress_ph = st.empty()
 
-    if ctx.final_output is not None or st.session_state.get("showcase_done"):
+    # ── FIX: poll ctx.pipeline_status, NOT st.session_state.showcase_done ────
+    if ctx.pipeline_status == "error":
+        progress_ph.empty()
+        st.error("Showcase failed.")
+        return
+
+    if ctx.pipeline_status == "showcase_done" or ctx.final_output is not None:
         progress_ph.progress(1.0)
         st.session_state.stage = "output"
         st.rerun()
         return
 
-    if ctx.pipeline_status == "error":
-        st.error("Showcase failed.")
-        return
-
+    # ── Still running ─────────────────────────────────────────────────────────
     i = st.session_state.get("showcase_poll_i", 0)
     progress_ph.progress(min(0.95, 0.3 + (i % 20) * 0.03))
     st.session_state.showcase_poll_i = i + 1
 
-    if st.button("🔄 Output ready? Click to continue"):
-        st.rerun()
     time.sleep(2)
     st.rerun()
 
@@ -587,8 +586,9 @@ def screen_output():
         if st.button("Generate", use_container_width=True):
             ctx.output_format = format_options[new_format_label]
             ctx.final_output = None
+            ctx.pipeline_status = "showcasing"
             st.session_state.stage = "showcasing"
-            st.session_state.showcase_done = False
+            st.session_state.pop("showcase_poll_i", None)
             t = threading.Thread(target=_run_showcase, args=(ctx,), daemon=True)
             t.start()
             st.rerun()
@@ -607,7 +607,6 @@ def screen_output():
         st.error(f"**Output generation failed:** {msg}")
         return
 
-    # Non-recoverable errors in sidebar
     non_recoverable = [e for e in ctx.errors if not e.get("recoverable")]
     if non_recoverable:
         with st.expander("⚠️ Pipeline warnings"):
@@ -619,14 +618,12 @@ def screen_output():
 
     # ── Format-specific rendering ─────────────────────────────────────────────
     if ctx.output_format in ("briefing", "written_review"):
-        # Markdown text output
         if isinstance(output, str):
             st.markdown(output)
         else:
             st.write(output)
 
     elif ctx.output_format == "timeline":
-        # Plotly timeline chart
         col1, col2 = st.columns([3, 1])
         with col1:
             if output is not None:
@@ -639,14 +636,12 @@ def screen_output():
                 st.markdown(f"**{event.get('year', '?')}** {icon}")
                 st.caption(event.get("shift_description", "")[:100])
 
-        # Paper scatter plot
         st.markdown("#### Paper Landscape")
         from output.timeline import generate_papers_scatter
         scatter_fig = generate_papers_scatter(ctx)
         st.plotly_chart(scatter_fig, use_container_width=True)
 
     elif ctx.output_format == "knowledge_map":
-        # Plotly network graph + D3 JSON option
         if output is not None:
             st.plotly_chart(output, use_container_width=True)
 
